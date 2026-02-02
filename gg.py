@@ -1,15 +1,11 @@
-import pygame
 import math
 import random
 
-pygame.mixer.init()
-pygame.init()
+import arcade
 
-info = pygame.display.Info()
-SCREEN_WIDTH = info.current_w
-SCREEN_HEIGHT = info.current_h
-screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.FULLSCREEN)
-pygame.display.set_caption("Castle Shooter")
+
+SCREEN_WIDTH, SCREEN_HEIGHT = arcade.get_display_size()
+SCREEN_TITLE = "Castle Shooter"
 
 FPS = 60
 TILE_SIZE = 50
@@ -27,293 +23,173 @@ GOLD = (255, 215, 0)
 DARK_RED = (100, 20, 20)
 STONE = (120, 100, 80)
 
-try:
-    player_shoot_sound = pygame.mixer.Sound('shoot.wav')
-    player_shoot_sound.set_volume(0.3)
-except:
-    pass
 
-try:
-    enemy_shoot_sound = pygame.mixer.Sound('enemy_shot.wav')
-    enemy_shoot_sound.set_volume(0.3)
-except:
-    pass
-
-try:
-    teleport_sound = pygame.mixer.Sound('teleport.wav')
-    teleport_sound.set_volume(0.5)
-except:
-    pass
-try:
-    death_sound = pygame.mixer.Sound('death.wav')
-    death_sound.set_volume(0.5)
-except:
-    pass
-
-try:
-    pygame.mixer.music.load('music.mp3')
-    pygame.mixer.music.set_volume(0.2)
-    pygame.mixer.music.play(-1)
-except:
-    pass
-
-clock = pygame.time.Clock()
-font = pygame.font.SysFont("Georgia", 26)
-title_font = pygame.font.SysFont("Georgia", 72, bold=True)
-menu_font = pygame.font.SysFont("Georgia", 32, bold=True)
-
-all_sprites = pygame.sprite.Group()
-walls = pygame.sprite.Group()
-bullets = pygame.sprite.Group()
-enemy_bullets = pygame.sprite.Group()
-enemies = pygame.sprite.Group()
-portals = pygame.sprite.Group()
-corpses = pygame.sprite.Group()
+def load_texture_safe(path, size, color, flipped_horizontally=False):
+    try:
+        texture = arcade.load_texture(path, flipped_horizontally=flipped_horizontally)
+        scale = min(size[0] / texture.width, size[1] / texture.height) if size else 1.0
+        return texture, scale
+    except OSError:
+        texture = arcade.make_soft_square_texture(size[0], color, 255, 0)
+        return texture, 1.0
 
 
-def create_player_image():
-    img = pygame.image.load('player.png').convert_alpha()
-    img = pygame.transform.scale(img, (75, 75))
-    return img
+def load_sound_safe(path):
+    try:
+        return arcade.load_sound(path)
+    except OSError:
+        return None
 
 
-def create_enemy_image(kind):
-    if kind == "weak":
-        img = pygame.image.load('enemy_weak.png').convert_alpha()
-        img = pygame.transform.scale(img, (100, 150))
-    elif kind == "norm":
-        img = pygame.image.load('enemy_weak.png').convert_alpha()
-        img = pygame.transform.scale(img, (140, 200))
-    else:
-        img = pygame.image.load('enemy_boss.png').convert_alpha()
-        img = pygame.transform.scale(img, (250, 250))
-    return img
+player_shoot_sound = load_sound_safe("shoot.wav")
+enemy_shoot_sound = load_sound_safe("enemy_shot.wav")
+teleport_sound = load_sound_safe("teleport.wav")
+death_sound = load_sound_safe("death.wav")
+lose_sound = load_sound_safe("lose_sound.mp3")
+win_sound = load_sound_safe("win_sound.mp3")
+music = load_sound_safe("music.mp3")
 
 
-def create_death_image(kind):
-    if kind == "weak":
-        size = (35, 35)
-    elif kind == "norm":
-        size = (40, 40)
-    else:
-        size = (80, 80)
+class Button:
+    def __init__(self, x, y, width, height, text, color):
+        self.x = x
+        self.y = y
+        self.width = width
+        self.height = height
+        self.text = text
+        self.color = color
+        self.hover = False
 
-    img = pygame.Surface(size, pygame.SRCALPHA)
-    center_x, center_y = size[0] // 2, size[1] // 2
-    pygame.draw.line(img, RED, (5, 5), (size[0] - 5, size[1] - 5), 4)
-    pygame.draw.line(img, RED, (size[0] - 5, 5), (5, size[1] - 5), 4)
-    return img
+    @property
+    def rect(self):
+        return (
+            self.x - self.width / 2,
+            self.y - self.height / 2,
+            self.width,
+            self.height,
+        )
+
+    def draw(self):
+        x, y, width, height = self.rect
+        if self.hover:
+            arcade.draw_rectangle_outline(self.x, self.y, width + 10, height + 10, GOLD, 2)
+        arcade.draw_rectangle_filled(self.x, self.y, width, height, self.color)
+        arcade.draw_rectangle_outline(self.x, self.y, width, height, GOLD, 4)
+        arcade.draw_text(
+            self.text,
+            self.x,
+            self.y,
+            GOLD if not self.hover else WHITE,
+            font_size=24,
+            anchor_x="center",
+            anchor_y="center",
+            font_name="Georgia",
+        )
+
+    def check_hover(self, pos):
+        x, y, width, height = self.rect
+        self.hover = x <= pos[0] <= x + width and y <= pos[1] <= y + height
+        return self.hover
+
+    def is_clicked(self, pos):
+        x, y, width, height = self.rect
+        return x <= pos[0] <= x + width and y <= pos[1] <= y + height
 
 
-player_img = create_player_image()
-enemy_imgs = {
-    "weak": create_enemy_image("weak"),
-    "norm": create_enemy_image("norm"),
-    "boss": create_enemy_image("boss")
-}
-death_imgs = {
-    "weak": create_death_image("weak"),
-    "norm": create_death_image("norm"),
-    "boss": create_death_image("boss")
-}
-
-
-class Corpse(pygame.sprite.Sprite):
-    def __init__(self, x, y, kind):
-        super().__init__(all_sprites, corpses)
-        self.image = death_imgs[kind].copy()
-        self.rect = self.image.get_rect()
-        self.rect.center = (x, y)
+class Corpse(arcade.Sprite):
+    def __init__(self, x, y, texture):
+        super().__init__(texture=texture, center_x=x, center_y=y)
         self.lifetime = 300
 
     def update(self):
         self.lifetime -= 1
         if self.lifetime <= 0:
-            self.kill()
-        if self.lifetime < 60:
-            alpha = int((self.lifetime / 60) * 255)
-            self.image.set_alpha(alpha)
+            self.remove_from_sprite_lists()
+        elif self.lifetime < 60:
+            self.alpha = int((self.lifetime / 60) * 255)
 
 
-class Button:
-    def __init__(self, x, y, width, height, text, color):
-        self.rect = pygame.Rect(x, y, width, height)
-        self.text = text
-        self.color = color
-        self.hover = False
-
-    def draw(self, surface):
-        if self.hover:
-            pygame.draw.rect(surface, GOLD, self.rect.inflate(10, 10), border_radius=5)
-
-        pygame.draw.rect(surface, self.color, self.rect, border_radius=5)
-        pygame.draw.rect(surface, GOLD, self.rect, 4, border_radius=5)
-
-        text_surf = menu_font.render(self.text, True, GOLD if not self.hover else WHITE)
-        text_rect = text_surf.get_rect(center=self.rect.center)
-        surface.blit(text_surf, text_rect)
-
-    def check_hover(self, pos):
-        self.hover = self.rect.collidepoint(pos)
-        return self.hover
-
-    def is_clicked(self, pos):
-        return self.rect.collidepoint(pos)
-
-
-class Camera:
-    def __init__(self, width, height):
-        self.camera = pygame.Rect(0, 0, width, height)
-        self.width = width
-        self.height = height
-
-    def apply(self, entity):
-        return entity.rect.move(self.camera.topleft)
-
-    def update(self, target):
-        x = -target.rect.centerx + int(SCREEN_WIDTH / 2)
-        y = -target.rect.centery + int(SCREEN_HEIGHT / 2)
-
-        x = min(0, x)
-        y = min(0, y)
-        x = max(-(self.width - SCREEN_WIDTH), x)
-        y = max(-(self.height - SCREEN_HEIGHT), y)
-
-        self.camera.x += (x - self.camera.x) * 0.15
-        self.camera.y += (y - self.camera.y) * 0.15
-
-
-class Wall(pygame.sprite.Sprite):
+class Wall(arcade.Sprite):
     def __init__(self, x, y):
-        super().__init__(all_sprites, walls)
-        self.image = pygame.Surface((TILE_SIZE, TILE_SIZE))
-        self.image.fill(WALL_COLOR)
-        pygame.draw.rect(self.image, (60, 40, 40), (2, 2, 46, 46), 2)
-        self.rect = self.image.get_rect()
-        self.rect.x = x * TILE_SIZE
-        self.rect.y = y * TILE_SIZE
+        texture = arcade.make_soft_square_texture(TILE_SIZE, WALL_COLOR, 255, 0)
+        super().__init__(texture=texture)
+        self.center_x = x * TILE_SIZE + TILE_SIZE / 2
+        self.center_y = y * TILE_SIZE + TILE_SIZE / 2
 
 
-class Portal(pygame.sprite.Sprite):
+class Portal(arcade.Sprite):
     def __init__(self, x, y):
-        super().__init__(all_sprites, portals)
-        self.image = pygame.Surface((TILE_SIZE, TILE_SIZE), pygame.SRCALPHA)
-        self.rect = self.image.get_rect()
-        self.rect.x = x * TILE_SIZE
-        self.rect.y = y * TILE_SIZE
-        self.flag = 0
-
-    def update(self):
-        if not self.flag:
-            self.image = pygame.image.load('portal.png')
-            self.image = pygame.transform.scale(self.image, (150, 150))
-            self.flag = 1
+        texture, scale = load_texture_safe("portal.png", (150, 150), PORTAL_COLOR)
+        super().__init__(texture=texture, scale=scale)
+        self.center_x = x * TILE_SIZE + TILE_SIZE / 2
+        self.center_y = y * TILE_SIZE + TILE_SIZE / 2
 
 
-class Bullet(pygame.sprite.Sprite):
+class Bullet(arcade.Sprite):
     def __init__(self, x, y, angle, is_player=True):
         if is_player:
-            super().__init__(all_sprites, bullets)
-            self.speed = 10
-            self.damage = 25
-            self.bullet_sound = 'player'
-            self.image = pygame.image.load('player_bullet.png').convert_alpha()
-            self.image = pygame.transform.scale(self.image,(30, 30))
+            texture, scale = load_texture_safe("player_bullet.png", (30, 30), YELLOW)
+            speed = 10
+            damage = 25
+            sound = player_shoot_sound
         else:
-            super().__init__(all_sprites, enemy_bullets)
-            self.speed = 6
-            self.color = RED
-            self.damage = 15
-            self.bullet_sound = 'enemy'
-            self.image = pygame.Surface((20, 20), pygame.SRCALPHA)
-            pygame.draw.circle(self.image, self.color, (10, 10), 35)
+            texture = arcade.make_soft_square_texture(20, RED, 255, 0)
+            scale = 1.0
+            speed = 6
+            damage = 15
+            sound = enemy_shoot_sound
 
-        self.rect = self.image.get_rect()
-        self.rect.center = (x, y)
-        self.vx = math.cos(angle) * self.speed
-        self.vy = math.sin(angle) * self.speed
+        super().__init__(texture=texture, scale=scale, center_x=x, center_y=y)
+        self.change_x = math.cos(angle) * speed
+        self.change_y = math.sin(angle) * speed
+        self.damage = damage
         self.lifetime = 50
+        if sound:
+            arcade.play_sound(sound, volume=0.3)
 
     def update(self):
-        if self.bullet_sound == 'player':
-            player_shoot_sound.play()
-        elif self.bullet_sound == 'enemy':
-            enemy_shoot_sound.play()
-        self.bullet_sound = 0
-
-        self.rect.x += self.vx
-        self.rect.y += self.vy
-
-        if pygame.sprite.spritecollideany(self, walls):
-            self.kill()
-
+        self.center_x += self.change_x
+        self.center_y += self.change_y
         self.lifetime -= 1
         if self.lifetime <= 0:
-            self.kill()
+            self.remove_from_sprite_lists()
 
 
-class Player(pygame.sprite.Sprite):
+class Player(arcade.Sprite):
     def __init__(self, x, y):
-        super().__init__(all_sprites)
-        self.image = player_img.copy()
-        self.rect = self.image.get_rect()
-        self.rect.center = (x, y)
+        texture_right, scale = load_texture_safe("player.png", (75, 75), GREEN)
+        texture_left, _ = load_texture_safe("player.png", (75, 75), GREEN, flipped_horizontally=True)
+        self.texture_right = texture_right
+        self.texture_left = texture_left
+        super().__init__(texture=self.texture_right, scale=scale, center_x=x, center_y=y)
         self.speed = 5
         self.hp = 100
         self.max_hp = 100
         self.last_shot = 0
-        self.vert_flag = 0
+        self.face_right = True
 
     def update(self):
-        keys = pygame.key.get_pressed()
-        dx, dy = 0, 0
+        self.center_x += self.change_x
+        self.center_y += self.change_y
 
-        if keys[pygame.K_w] or keys[pygame.K_UP]:
-            dy = -self.speed
-        if keys[pygame.K_s] or keys[pygame.K_DOWN]:
-            dy = self.speed
-        if keys[pygame.K_a] or keys[pygame.K_LEFT]:
-            if self.vert_flag:
-                self.image = pygame.transform.flip(self.image, True, False)
-                self.vert_flag = 0
-            dx = -self.speed
-        if keys[pygame.K_d] or keys[pygame.K_RIGHT]:
-            if not self.vert_flag:
-                self.image = pygame.transform.flip(self.image, True, False)
-                self.vert_flag = 1
-            dx = self.speed
-
-        if dx != 0 and dy != 0:
-            dx *= 0.707
-            dy *= 0.707
-
-        self.rect.x += dx
-        if pygame.sprite.spritecollide(self, walls, False):
-            self.rect.x -= dx
-
-        self.rect.y += dy
-        if pygame.sprite.spritecollide(self, walls, False):
-            self.rect.y -= dy
-
-    def shoot(self, camera):
-        now = pygame.time.get_ticks()
-        if now - self.last_shot > 750:
-            self.last_shot = now
-
-            mx, my = pygame.mouse.get_pos()
-            cx, cy = camera.camera.topleft
-            angle = math.atan2((my - cy) - self.rect.centery, (mx - cx) - self.rect.centerx)
-            Bullet(self.rect.centerx, self.rect.centery, angle, is_player=True)
+    def update_direction(self):
+        if self.change_x < 0 and self.face_right:
+            self.texture = self.texture_left
+            self.face_right = False
+        elif self.change_x > 0 and not self.face_right:
+            self.texture = self.texture_right
+            self.face_right = True
 
 
-class Enemy(pygame.sprite.Sprite):
-    def __init__(self, x, y, player, kind):
-        super().__init__(all_sprites, enemies)
+class Enemy(arcade.Sprite):
+    def __init__(self, x, y, player, kind, textures, walls):
+        texture, scale = textures[kind]
+        super().__init__(texture=texture, scale=scale, center_x=x, center_y=y)
         self.player = player
         self.kind = kind
+        self.walls = walls
         self.aggro = False
         self.aggro_range = 200
-
         if kind == "weak":
             self.hp = 30
             self.max_hp = 30
@@ -322,75 +198,32 @@ class Enemy(pygame.sprite.Sprite):
             self.hp = 60
             self.max_hp = 60
             self.speed = 2
-        elif kind == "boss":
+        else:
             self.hp = 300
             self.max_hp = 300
             self.speed = 2
             self.aggro_range = 350
-
-        self.image = enemy_imgs[kind].copy()
-        self.rect = self.image.get_rect()
-        self.rect.center = (x, y)
         self.last_shot = 0
 
-    def update(self):
+    def update(self, delta_time: float = 1 / 60):
         if not self.player:
             return
-        dx = self.player.rect.centerx - self.rect.centerx
-        dy = self.player.rect.centery - self.rect.centery
+        dx = self.player.center_x - self.center_x
+        dy = self.player.center_y - self.center_y
         dist = math.hypot(dx, dy)
         if dist < self.aggro_range:
             self.aggro = True
-
         if not self.aggro:
             return
-
         if dist != 0:
             dx, dy = dx / dist, dy / dist
-
         if dist > 50:
-            self.rect.x += dx * self.speed
-            if pygame.sprite.spritecollideany(self, walls):
-                self.rect.x -= dx * self.speed
-
-            self.rect.y += dy * self.speed
-            if pygame.sprite.spritecollideany(self, walls):
-                self.rect.y -= dy * self.speed
-
-        if dist < 500:
-            now = pygame.time.get_ticks()
-            delay = 1200 if self.kind != "boss" else 600
-            if now - self.last_shot > delay:
-                self.last_shot = now
-                angle = math.atan2(
-                    self.player.rect.centery - self.rect.centery,
-                    self.player.rect.centerx - self.rect.centerx
-                )
-                Bullet(self.rect.centerx, self.rect.centery, angle, is_player=False)
-
-        if self.hp <= 0:
-            if death_sound:
-                death_sound.play()
-            Corpse(self.rect.centerx, self.rect.centery, self.kind)
-            self.kill()
-
-    def draw_health_bar(self, surface, camera):
-        if self.hp < self.max_hp:
-            bar_width = self.rect.width
-            bar_height = 5
-            bar_x = self.rect.x + camera.camera.x
-            bar_y = self.rect.y + camera.camera.y - 10
-
-            bg_rect = pygame.Rect(bar_x, bar_y, bar_width, bar_height)
-            pygame.draw.rect(surface, (50, 50, 50), bg_rect)
-
-            hp_ratio = max(0, self.hp / self.max_hp)
-            fill_width = int(bar_width * hp_ratio)
-            fill_rect = pygame.Rect(bar_x, bar_y, fill_width, bar_height)
-
-            color = GREEN if hp_ratio > 0.6 else YELLOW if hp_ratio > 0.3 else RED
-            pygame.draw.rect(surface, color, fill_rect)
-            pygame.draw.rect(surface, WHITE, bg_rect, 1)
+            self.center_x += dx * self.speed
+            if arcade.check_for_collision_with_list(self, self.walls):
+                self.center_x -= dx * self.speed
+            self.center_y += dy * self.speed
+            if arcade.check_for_collision_with_list(self, self.walls):
+                self.center_y -= dy * self.speed
 
 
 MAP1 = [
@@ -419,7 +252,7 @@ MAP1 = [
     "#.............................#............#......N.....#",
     "#.................w...........#.......w....#............#",
     "#.............................#............#............#",
-    "#########################################################"
+    "#########################################################",
 ]
 
 MAP2 = [
@@ -448,241 +281,336 @@ MAP2 = [
     "#.......................................................#",
     "#...........#...........................................#",
     "#...........#...........................................#",
-    "#########################################################"
+    "#########################################################",
 ]
 
 
-def load_level(level_num):
-    teleport_sound.play()
-    all_sprites.empty()
-    walls.empty()
-    bullets.empty()
-    enemy_bullets.empty()
-    enemies.empty()
-    portals.empty()
-    corpses.empty()
-    current_map = MAP1 if level_num == 1 else MAP2
-    map_w = len(current_map[0]) * TILE_SIZE
-    map_h = len(current_map) * TILE_SIZE
-    player = None
+class CastleShooter(arcade.Window):
+    def __init__(self):
+        super().__init__(SCREEN_WIDTH, SCREEN_HEIGHT, SCREEN_TITLE, fullscreen=True, update_rate=1 / FPS)
+        arcade.set_background_color(BLACK)
+        self.state = "menu"
+        self.current_level = 1
+        self.player = None
+        self.camera = arcade.Camera(self.width, self.height)
+        self.all_sprites = arcade.SpriteList()
+        self.walls = arcade.SpriteList()
+        self.bullets = arcade.SpriteList()
+        self.enemy_bullets = arcade.SpriteList()
+        self.enemies = arcade.SpriteList()
+        self.portals = arcade.SpriteList()
+        self.corpses = arcade.SpriteList()
+        self.level_width = 0
+        self.level_height = 0
+        self.keys = set()
+        self.play_button = Button(self.width / 2, self.height / 2, 300, 70, "START GAME", DARK_RED)
+        self.quit_button = Button(self.width / 2, self.height / 2 - 100, 300, 70, "LEAVE", (60, 30, 30))
+        self.enemy_textures = {
+            "weak": load_texture_safe("enemy_weak.png", (100, 150), RED),
+            "norm": load_texture_safe("enemy_weak.png", (140, 200), PURPLE),
+            "boss": load_texture_safe("enemy_boss.png", (250, 250), GOLD),
+        }
+        self.death_textures = {
+            "weak": arcade.make_soft_square_texture(35, RED, 255, 0),
+            "norm": arcade.make_soft_square_texture(40, RED, 255, 0),
+            "boss": arcade.make_soft_square_texture(80, RED, 255, 0),
+        }
+        if music:
+            arcade.play_sound(music, volume=0.2, looping=True)
 
-    for row_idx, row in enumerate(current_map):
-        for col_idx, char in enumerate(row):
-            x = col_idx * TILE_SIZE
-            y = row_idx * TILE_SIZE
-            if char == "#":
-                Wall(col_idx, row_idx)
-            elif char == "P":
-                player = Player(x + 25, y + 25)
-            elif char == "w":
-                Enemy(x + 25, y + 25, None, "weak")
-            elif char == "n":
-                Enemy(x + 25, y + 25, None, "norm")
-            elif char == "B":
-                Enemy(x + 25, y + 25, None, "boss")
-            elif char == "N":
-                Portal(col_idx, row_idx)
+    def setup_level(self, level_num):
+        if teleport_sound:
+            arcade.play_sound(teleport_sound, volume=0.5)
+        self.all_sprites = arcade.SpriteList()
+        self.walls = arcade.SpriteList()
+        self.bullets = arcade.SpriteList()
+        self.enemy_bullets = arcade.SpriteList()
+        self.enemies = arcade.SpriteList()
+        self.portals = arcade.SpriteList()
+        self.corpses = arcade.SpriteList()
+        current_map = MAP1 if level_num == 1 else MAP2
+        self.level_width = len(current_map[0]) * TILE_SIZE
+        self.level_height = len(current_map) * TILE_SIZE
+        self.player = None
 
-    for enemy in enemies:
-        enemy.player = player
+        for row_idx, row in enumerate(current_map):
+            for col_idx, char in enumerate(row):
+                x = col_idx * TILE_SIZE + TILE_SIZE / 2
+                y = row_idx * TILE_SIZE + TILE_SIZE / 2
+                if char == "#":
+                    wall = Wall(col_idx, row_idx)
+                    self.all_sprites.append(wall)
+                    self.walls.append(wall)
+                elif char == "P":
+                    self.player = Player(x, y)
+                    self.all_sprites.append(self.player)
+                elif char in {"w", "n", "B"}:
+                    kind = "weak" if char == "w" else "norm" if char == "n" else "boss"
+                    enemy = Enemy(x, y, None, kind, self.enemy_textures, self.walls)
+                    self.all_sprites.append(enemy)
+                    self.enemies.append(enemy)
+                elif char == "N":
+                    portal = Portal(col_idx, row_idx)
+                    self.all_sprites.append(portal)
+                    self.portals.append(portal)
 
-    return player, map_w, map_h
+        for enemy in self.enemies:
+            enemy.player = self.player
 
+    def on_draw(self):
+        arcade.start_render()
+        if self.state == "menu":
+            self.draw_menu()
+            return
 
-def draw_health_bar(surface, x, y, hp, max_hp, width=200):
-    ratio = max(0, hp / max_hp)
-    fill = int(width * ratio)
-    outline_rect = pygame.Rect(x, y, width, 20)
-    fill_rect = pygame.Rect(x, y, fill, 20)
-    color = GREEN if ratio > 0.6 else YELLOW if ratio > 0.3 else RED
-    pygame.draw.rect(surface, color, fill_rect)
-    pygame.draw.rect(surface, WHITE, outline_rect, 2)
+        self.camera.use()
+        arcade.draw_rectangle_filled(
+            self.level_width / 2,
+            self.level_height / 2,
+            self.level_width,
+            self.level_height,
+            FLOOR_COLOR,
+        )
+        self.all_sprites.draw()
+        self.draw_fog_of_war()
 
+        self.camera.use()
+        self.draw_hud()
 
-def draw_fog_of_war(surface, player_pos, camera):
-    fog = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
-    fog.fill((0, 0, 0, 200))
+    def draw_menu(self):
+        self.draw_medieval_background()
+        arcade.draw_text(
+            "CASTLE SHOOTERS",
+            self.width / 2,
+            self.height / 2 + 200,
+            GOLD,
+            font_size=48,
+            font_name="Georgia",
+            anchor_x="center",
+        )
+        self.play_button.draw()
+        self.quit_button.draw()
 
-    screen_x = player_pos[0] + camera.camera.x
-    screen_y = player_pos[1] + camera.camera.y
+    def draw_medieval_background(self):
+        arcade.draw_rectangle_filled(self.width / 2, self.height / 2, self.width, self.height, (20, 15, 10))
+        for _ in range(50):
+            x = random.randint(0, self.width)
+            y = random.randint(0, self.height)
+            size = random.randint(30, 100)
+            arcade.draw_circle_filled(x, y, size, STONE)
+        frame_thickness = 30
+        arcade.draw_rectangle_filled(self.width / 2, frame_thickness / 2, self.width, frame_thickness, STONE)
+        arcade.draw_rectangle_filled(
+            self.width / 2, self.height - frame_thickness / 2, self.width, frame_thickness, STONE
+        )
+        arcade.draw_rectangle_filled(frame_thickness / 2, self.height / 2, frame_thickness, self.height, STONE)
+        arcade.draw_rectangle_filled(
+            self.width - frame_thickness / 2, self.height / 2, frame_thickness, self.height, STONE
+        )
 
-    light_radius = 220
-    light = pygame.Surface((light_radius * 2, light_radius * 2), pygame.SRCALPHA)
+    def draw_fog_of_war(self):
+        if not self.player:
+            return
+        arcade.draw_rectangle_filled(
+            self.player.center_x,
+            self.player.center_y,
+            self.level_width,
+            self.level_height,
+            (0, 0, 0, 170),
+        )
+        arcade.draw_circle_filled(self.player.center_x, self.player.center_y, 220, (0, 0, 0, 60))
 
-    for r in range(light_radius, 0, -4):
-        alpha = int(255 * (1 - r / light_radius))
-        color = (255, 180, 80, alpha)
-        pygame.draw.circle(light, color, (light_radius, light_radius), r)
-    fog.blit(light, (screen_x - light_radius, screen_y - light_radius),
-             special_flags=pygame.BLEND_RGBA_SUB)
-    surface.blit(fog, (0, 0))
+    def draw_hud(self):
+        arcade.set_viewport(0, self.width, 0, self.height)
+        hp_ratio = max(0, self.player.hp / self.player.max_hp) if self.player else 0
+        fill = int(200 * hp_ratio)
+        color = GREEN if hp_ratio > 0.6 else YELLOW if hp_ratio > 0.3 else RED
+        arcade.draw_rectangle_filled(10 + fill / 2, self.height - 20, fill, 20, color)
+        arcade.draw_rectangle_outline(110, self.height - 20, 200, 20, WHITE, 2)
+        arcade.draw_text(f"HP: {self.player.hp}/{self.player.max_hp}", 10, self.height - 45, WHITE, 14)
+        arcade.draw_text(f"Enemies lefts: {len(self.enemies)}", 10, self.height - 70, WHITE, 14)
+        arcade.draw_text(f"Current level: {self.current_level}", 10, self.height - 95, WHITE, 14)
+        if self.state == "game_over":
+            arcade.draw_text(
+                "DEFEAT",
+                self.width / 2,
+                self.height / 2 + 20,
+                RED,
+                48,
+                anchor_x="center",
+            )
+            arcade.draw_text("Press SPACE", self.width / 2, self.height / 2 - 20, WHITE, 20, anchor_x="center")
+        if self.state == "victory":
+            arcade.draw_text(
+                "VICTORY!",
+                self.width / 2,
+                self.height / 2 + 20,
+                GOLD,
+                48,
+                anchor_x="center",
+            )
+            arcade.draw_text("Press SPACE", self.width / 2, self.height / 2 - 20, WHITE, 20, anchor_x="center")
 
+    def on_update(self, delta_time: float):
+        if self.state != "game":
+            return
 
-def draw_medieval_background(surface):
-    surface.fill((20, 15, 10))
-    for i in range(50):
-        x = random.randint(0, SCREEN_WIDTH)
-        y = random.randint(0, SCREEN_HEIGHT)
-        size = random.randint(30, 100)
-        pygame.draw.circle(surface, STONE, (x, y), size)
-    frame_thickness = 30
-    pygame.draw.rect(surface, STONE, (0, 0, SCREEN_WIDTH, frame_thickness))
-    pygame.draw.rect(surface, STONE, (0, SCREEN_HEIGHT - frame_thickness, SCREEN_WIDTH, frame_thickness))
-    pygame.draw.rect(surface, STONE, (0, 0, frame_thickness, SCREEN_HEIGHT))
-    pygame.draw.rect(surface, STONE, (SCREEN_WIDTH - frame_thickness, 0, frame_thickness, SCREEN_HEIGHT))
+        self.handle_player_movement()
+        self.player.update_direction()
+        self.enemies.update()
+        self.bullets.update()
+        self.enemy_bullets.update()
+        self.corpses.update()
 
+        for bullet in list(self.bullets):
+            if arcade.check_for_collision_with_list(bullet, self.walls):
+                bullet.remove_from_sprite_lists()
 
-def main_menu():
-    background = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
-    draw_medieval_background(background)
+        for bullet in list(self.enemy_bullets):
+            if arcade.check_for_collision_with_list(bullet, self.walls):
+                bullet.remove_from_sprite_lists()
 
-    play_button = Button(SCREEN_WIDTH // 2 - 150, SCREEN_HEIGHT // 2 - 20, 300, 70, "START GAME", DARK_RED)
-    quit_button = Button(SCREEN_WIDTH // 2 - 150, SCREEN_HEIGHT // 2 + 80, 300, 70, "LEAVE", (60, 30, 30))
+        hits = arcade.check_for_collision_with_list(self.player, self.enemy_bullets)
+        for hit_bullet in hits:
+            self.player.hp -= hit_bullet.damage
+            hit_bullet.remove_from_sprite_lists()
+            if self.player.hp < 0:
+                self.player.hp = 0
 
-    while True:
-        mouse_pos = pygame.mouse.get_pos()
+        hits = arcade.check_for_collision_with_list(self.player, self.portals)
+        if hits and self.current_level == 1 and len(self.enemies) == 0:
+            self.current_level = 2
+            self.setup_level(self.current_level)
 
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                return False
-            if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
-                return False
-            if event.type == pygame.MOUSEBUTTONDOWN:
-                if play_button.is_clicked(mouse_pos):
-                    return True
-                if quit_button.is_clicked(mouse_pos):
-                    return False
+        for enemy in list(self.enemies):
+            if enemy.hp <= 0:
+                if death_sound:
+                    arcade.play_sound(death_sound, volume=0.5)
+                corpse = Corpse(enemy.center_x, enemy.center_y, self.death_textures[enemy.kind])
+                self.corpses.append(corpse)
+                self.all_sprites.append(corpse)
+                enemy.remove_from_sprite_lists()
+            else:
+                self.handle_enemy_shoot(enemy)
 
-        play_button.check_hover(mouse_pos)
-        quit_button.check_hover(mouse_pos)
+        for enemy in list(self.enemies):
+            hits = arcade.check_for_collision_with_list(enemy, self.bullets)
+            for bullet in hits:
+                enemy.hp -= 10
+                enemy.aggro = True
+                bullet.remove_from_sprite_lists()
 
-        screen.blit(background, (0, 0))
+        if self.player.hp <= 0 and self.state == "game":
+            if lose_sound:
+                arcade.play_sound(lose_sound, volume=0.3)
+            self.state = "game_over"
 
-        title_text = title_font.render("CASTLE SHOOTERS", True, GOLD)
-        title_rect = title_text.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 200))
-        screen.blit(title_text, title_rect)
+        if self.current_level == 2 and len(self.enemies) == 0 and self.state == "game":
+            if win_sound:
+                arcade.play_sound(win_sound, volume=0.7)
+            self.state = "victory"
 
-        play_button.draw(screen)
-        quit_button.draw(screen)
+        self.center_camera_to_player()
 
-        pygame.display.flip()
-        clock.tick(FPS)
+    def handle_enemy_shoot(self, enemy):
+        if not self.player:
+            return
+        dx = self.player.center_x - enemy.center_x
+        dy = self.player.center_y - enemy.center_y
+        dist = math.hypot(dx, dy)
+        if dist < 500:
+            now = arcade.get_time()
+            delay = 1.2 if enemy.kind != "boss" else 0.6
+            if now - enemy.last_shot > delay:
+                enemy.last_shot = now
+                angle = math.atan2(dy, dx)
+                bullet = Bullet(enemy.center_x, enemy.center_y, angle, is_player=False)
+                self.enemy_bullets.append(bullet)
+                self.all_sprites.append(bullet)
 
+    def center_camera_to_player(self):
+        if not self.player:
+            return
+        screen_center_x = self.player.center_x - self.width / 2
+        screen_center_y = self.player.center_y - self.height / 2
+        screen_center_x = max(0, min(screen_center_x, self.level_width - self.width))
+        screen_center_y = max(0, min(screen_center_y, self.level_height - self.height))
+        self.camera.move_to((screen_center_x, screen_center_y), 0.15)
 
-def game_loop():
-    current_level = 1
-    player, level_w, level_h = load_level(current_level)
-    camera = Camera(level_w, level_h)
+    def handle_player_movement(self):
+        if not self.player:
+            return
+        dx = 0
+        dy = 0
+        if arcade.key.W in self.keys or arcade.key.UP in self.keys:
+            dy += self.player.speed
+        if arcade.key.S in self.keys or arcade.key.DOWN in self.keys:
+            dy -= self.player.speed
+        if arcade.key.A in self.keys or arcade.key.LEFT in self.keys:
+            dx -= self.player.speed
+        if arcade.key.D in self.keys or arcade.key.RIGHT in self.keys:
+            dx += self.player.speed
+        if dx != 0 and dy != 0:
+            dx *= 0.707
+            dy *= 0.707
 
-    running = True
-    game_over = False
-    victory = False
+        self.player.change_x = dx
+        self.player.change_y = dy
+        self.player.center_x += dx
+        if arcade.check_for_collision_with_list(self.player, self.walls):
+            self.player.center_x -= dx
 
-    lose_sound = pygame.mixer.Sound('lose_sound.mp3')
-    lose_sound.set_volume(0.3)
-    lose_flag = 0
+        self.player.center_y += dy
+        if arcade.check_for_collision_with_list(self.player, self.walls):
+            self.player.center_y -= dy
 
-    win_sound = pygame.mixer.Sound('win_sound.mp3')
-    win_sound.set_volume(0.7)
-    win_flag = 0
+    def on_key_press(self, key, modifiers):
+        if key == arcade.key.ESCAPE:
+            if self.state == "menu":
+                arcade.close_window()
+            else:
+                self.state = "menu"
+            return
+        if key == arcade.key.SPACE and self.state in {"game_over", "victory"}:
+            self.state = "menu"
+            return
+        if self.state == "game":
+            self.keys.add(key)
 
-    while running:
-        clock.tick(FPS)
+    def on_key_release(self, key, modifiers):
+        self.keys.discard(key)
 
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                return False
-            if event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_ESCAPE:
-                    return True
-                if (game_over or victory) and event.key == pygame.K_SPACE:
-                    return True
+    def on_mouse_motion(self, x, y, dx, dy):
+        if self.state == "menu":
+            self.play_button.check_hover((x, y))
+            self.quit_button.check_hover((x, y))
 
-        if not game_over and not victory:
-            if pygame.mouse.get_pressed()[0]:
-                player.shoot(camera)
+    def on_mouse_press(self, x, y, button, modifiers):
+        if self.state == "menu":
+            if self.play_button.is_clicked((x, y)):
+                self.state = "game"
+                self.current_level = 1
+                self.setup_level(self.current_level)
+            elif self.quit_button.is_clicked((x, y)):
+                arcade.close_window()
+            return
 
-            player.update()
-            enemies.update()
-            bullets.update()
-            enemy_bullets.update()
-            portals.update()
-            corpses.update()
-            camera.update(player)
-
-            if current_level == 1 and pygame.sprite.spritecollide(player, portals, False):
-                if len(enemies) == 0:
-                    current_level = 2
-                    player, level_w, level_h = load_level(current_level)
-                    camera = Camera(level_w, level_h)
-
-            hits = pygame.sprite.groupcollide(enemies, bullets, False, True)
-            for hit_enemy in hits:
-                hit_enemy.hp -= 10
-                hit_enemy.aggro = True
-
-            hits = pygame.sprite.spritecollide(player, enemy_bullets, True)
-            for hit_bullet in hits:
-                player.hp -= hit_bullet.damage
-                if player.hp < 0:
-                    player.hp = 0
-
-            if player.hp <= 0:
-                game_over = True
-            if current_level == 2 and len(enemies) == 0:
-                victory = True
-
-
-        screen.fill(BLACK)
-
-        game_surface = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
-        game_surface.fill(FLOOR_COLOR)
-
-        for sprite in all_sprites:
-            game_surface.blit(sprite.image, camera.apply(sprite))
-
-        for enemy in enemies:
-            enemy.draw_health_bar(game_surface, camera)
-
-        draw_fog_of_war(game_surface, player.rect.center, camera)
-        screen.blit(game_surface, (0, 0))
-        draw_health_bar(screen, 10, 10, player.hp, player.max_hp)
-        hp_text = font.render(f"HP: {player.hp}/{player.max_hp}", True, WHITE)
-        screen.blit(hp_text, (10, 35))
-        enemies_text = font.render(f"Enemies lefts: {len(enemies)}", True, WHITE)
-        screen.blit(enemies_text, (10, 60))
-        level_text = font.render(f"Current level: {current_level}", True, WHITE)
-        screen.blit(level_text, (10, 85))
-        if game_over:
-            if not lose_flag:
-                lose_sound.play()
-                lose_flag = 1
-            game_over_text = title_font.render("DEFEAT", True, RED)
-            restart_text = menu_font.render("Press SPACE", True, WHITE)
-            screen.blit(game_over_text, (SCREEN_WIDTH // 2 - 200, SCREEN_HEIGHT // 2 - 50))
-            screen.blit(restart_text, (SCREEN_WIDTH // 2 - 150, SCREEN_HEIGHT // 2 + 20))
-        if victory:
-            if not win_flag:
-                win_sound.play()
-                win_flag = 1
-            victory_text = title_font.render("VICTORY!", True, GOLD)
-            restart_text = menu_font.render("Press SPACE", True, WHITE)
-            screen.blit(victory_text, (SCREEN_WIDTH // 2 - 150, SCREEN_HEIGHT // 2 - 50))
-            screen.blit(restart_text, (SCREEN_WIDTH // 2 - 150, SCREEN_HEIGHT // 2 + 20))
-
-        pygame.display.flip()
-
-    return False
+        if self.state != "game" or button != arcade.MOUSE_BUTTON_LEFT:
+            return
+        now = arcade.get_time()
+        if now - self.player.last_shot > 0.75:
+            self.player.last_shot = now
+            world_x = x + self.camera.position[0]
+            world_y = y + self.camera.position[1]
+            angle = math.atan2(world_y - self.player.center_y, world_x - self.player.center_x)
+            bullet = Bullet(self.player.center_x, self.player.center_y, angle, is_player=True)
+            self.bullets.append(bullet)
+            self.all_sprites.append(bullet)
 
 
 def main():
-    while True:
-        if not main_menu():
-            break
-        if not game_loop():
-            break
-
-    pygame.quit()
+    window = CastleShooter()
+    arcade.run()
 
 
 if __name__ == "__main__":
