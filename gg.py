@@ -292,7 +292,7 @@ class CastleShooter(arcade.Window):
         self.state = "menu"
         self.current_level = 1
         self.player = None
-        self.camera = arcade.Camera(self.width, self.height)
+        self.camera = arcade.camera.Camera(self.width, self.height)
         self.all_sprites = arcade.SpriteList()
         self.walls = arcade.SpriteList()
         self.bullets = arcade.SpriteList()
